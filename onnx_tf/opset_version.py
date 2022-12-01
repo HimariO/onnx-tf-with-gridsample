@@ -65,7 +65,7 @@ backend_opset_version = {
     'Gradient': [],
     'Greater': [1, 7, 9, 13],
     'GreaterOrEqual': [12, 16],
-    'GridSample': [],
+    'GridSample': [16],
     'HardSigmoid': [1, 6],
     'HardSwish': [14],
     'Hardmax': [1, 11, 13],
