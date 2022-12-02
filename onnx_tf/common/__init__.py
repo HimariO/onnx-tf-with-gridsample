@@ -29,6 +29,7 @@ class SysConfig:
   def __init__(self):
     self.auto_cast = False
     self.device = 'CPU'
+    self.input_perum = [0, 1, 2, 3]
 
 
 sys_config = SysConfig()
@@ -160,6 +161,7 @@ def get_data_format(x_rank):
 
   sp_dim_string = "".join(reversed(sp_dim_lst))
   storage_format = "NC" + sp_dim_string
+  storage_format = "".join(storage_format[i] for i in sys_config.input_perum if i < len(storage_format))
 
   if sys_config.device == "CUDA":
     compute_format = "NC" + sp_dim_string

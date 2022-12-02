@@ -201,6 +201,9 @@ class OnnxNode(object):
     self.inputs = list(node.input)
     self.outputs = list(node.output)
     self.node_proto = node
+  
+  def __repr__(self) -> str:
+    return f"[{self.op_type}] {self.name}"
 
 
 class OnnxGraph(object):

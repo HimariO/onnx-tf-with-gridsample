@@ -1,12 +1,17 @@
+import sys
 import onnx
 from onnx_tf.backend import prepare
+from loguru import logger
+
+sys.setrecursionlimit(9000)
 
 onnx_model_path = 'hdr_flownet.onnx'
 onnx_model = onnx.load(onnx_model_path)
 
-tf_model_path = 'tf_hdr_flownet'
-tf_rep = prepare(onnx_model)
-tf_rep.export_graph(tf_model_path)
+with logger.catch():
+    tf_model_path = 'tf_hdr_flownet'
+    tf_rep = prepare(onnx_model)
+    tf_rep.export_graph(tf_model_path)
 
 import tensorflow as tf
 
