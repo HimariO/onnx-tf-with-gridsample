@@ -65,9 +65,14 @@ class ConvMixin(BroadcastMixin):
     # Check auto_pad nonexistent or NOTSET first
     if "auto_pad" not in node.attrs or node.attrs["auto_pad"] == "NOTSET":
       if not transpose:
-        if pads != [0, 0] * spatial_size:
-          x = PadMixin.get_padding_as_op(x, pads)
-        pad_mode = "VALID"
+        pad_same = all(pads[0] == p for p in pads) and pads[0] == kernel_shape[1] // 2
+        # breakpoint()
+        if pad_same:
+          pad_mode = 'SAME'
+        else:
+          if pads != [0, 0] * spatial_size:
+            x = PadMixin.get_padding_as_op(x, pads)
+          pad_mode = "VALID"
       else:
         pad_mode = "NOTSET"
     # Then we use auto_pad to setup pad_mode
@@ -195,6 +200,7 @@ class ConvMixin(BroadcastMixin):
                              ] + [[0, p] for p in node.attrs["output_padding"]]
             output_padding.insert(compute_c_idx, [0, 0])
             conv_rs = tf.pad(conv_rs, output_padding)
+            breakpoint()
 
           # remove pads set in pads attr
           conv_rs_shape = tf_shape(conv_rs, tf.int32)
