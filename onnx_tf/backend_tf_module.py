@@ -6,7 +6,7 @@ import onnx_tf.common as common
 from onnx_tf.pb_wrapper import OnnxNode
 
 
-FakeNode = namedtuple("FakeNode", ["op_type"])
+FakeNode = namedtuple("FakeNode", ["op_type", "name"])
 
 class AxisMapping:
   
@@ -26,8 +26,12 @@ class AxisMapping:
       'Transpose': self.transp_attr,
       'Slice': self.slice_attr,
     }
+    self.visit = set()
   
   def mapping(self, node: OnnxNode, src_perm: List[int]) -> List[int]:
+    if node.name in self.visit:
+      return src_perm
+    self.visit.add(node.name)
     if node.op_type not in self.attr_mapping:
       return src_perm
     self.attr_mapping[node.op_type](node, src_perm)
@@ -47,7 +51,8 @@ class AxisMapping:
     self.tensor_dict[node.inputs[1]] = tf.concat(pads, axis=0)
   
   def cat_attr(self, node: OnnxNode, src_perm: List[int]):
-    node.attrs['axis'] = src_perm[node.attrs['axis']]
+    # print('1233333333333333333333333333333333333333333333', node.name, node.attrs['axis'])
+    node.attrs['axis'] = src_perm.index(node.attrs['axis'])
   
   def cat_tensor(self, node: OnnxNode, src_perm: List[int]):
     # TODO
@@ -64,34 +69,26 @@ class AxisMapping:
   def slice_attr(self, node: OnnxNode, src_perm: List[int]):
     if len(node.inputs) > 3:  # NOTE: no "axes" parameter
       axes = self.tensor_dict[node.inputs[3]]
-      keys_tensor = tf.constant(list(range(len(src_perm))))
-      vals_tensor = tf.constant(src_perm)
-      table = tf.lookup.StaticHashTable(
-          tf.lookup.KeyValueTensorInitializer(keys_tensor, vals_tensor),
-          default_value=-1)
-      self.tensor_dict[node.inputs[3]] = table.lookup(tf.cast(axes, tf.int32))
-      # breakpoint()
+      py_map = [0] * len(src_perm)
+      for i, v in enumerate(src_perm):
+        py_map[v] = i
+      table = tf.constant(py_map)
+      mapped = tf.gather(table, axes)
+      self.tensor_dict[node.inputs[3]] = mapped
+      
+      # vals_tensor = tf.constant(list(range(len(src_perm))))
+      # keys_tensor = tf.constant(src_perm)
+      # table = tf.lookup.StaticHashTable(
+      #     tf.lookup.KeyValueTensorInitializer(keys_tensor, vals_tensor),
+      #     default_value=-1)
+      # mapped = table.lookup(tf.cast(axes, tf.int32))
+      # self.tensor_dict[node.inputs[3]] = mapped
     else:
       starts = self.tensor_dict[node.inputs[1]]
       shape = starts.shape.as_list()
       axes_key = f"{node.name}_axes"
       self.tensor_dict[axes_key] = tf.constant(src_perm[:len(shape)])
       node.inputs.append(axes_key)
-
-    # if len(node.inputs) > 4:
-    #   steps = self.tensor_dict[node.inputs[4]]
-    #   steps = tf.stack([steps[ax] for ax in src_perm], axis=0)
-    #   self.tensor_dict[node.inputs[4]] = steps
-    
-    # starts = self.tensor_dict[node.inputs[1]]
-    # ends = self.tensor_dict[node.inputs[2]]
-    # # assert len(starts) == len(ends) == len(src_perm)
-    # breakpoint()
-    # starts = tf.stack([starts[ax] for ax in src_perm], axis=0)
-    # ends = tf.stack([ends[ax] for ax in src_perm], axis=0)
-    
-    # self.tensor_dict[node.inputs[1]] = starts
-    # self.tensor_dict[node.inputs[2]] = ends
 
 
 class AxisGraph:
@@ -143,8 +140,9 @@ class AxisGraph:
           self.tensor_axis[child] = ax_map.mapping(cnode, src_perm)
         else:
           # child is a tensor
-          cnode = FakeNode('Tensor')
+          cnode = FakeNode('Tensor', '1')
           self.tensor_axis[child] = ax_map.mapping(cnode, src_perm)
+    return [self.name2node[n] for n in topo_order if n in self.name2node]
 
 
 class TFModuleHelper(object):
@@ -199,7 +197,7 @@ class BackendTFModule(tf.Module):
     self.handler_variables = TFModuleHelper._create_handlers_variables_for_graph(
         handlers, graph_def, self.initializer_dict)
     self.is_export = False
-    self.clast_input = False
+    self.clast_input = True
 
   # get initializer from the main graph and all subgraphs in loop or if or scan
   # into tensor_dict
@@ -234,7 +232,7 @@ class BackendTFModule(tf.Module):
 
     return tensor_dict
 
-  @tf.function
+  @tf.function(autograph=True)
   def __call__(self, **kwargs):
     tensor_dict = kwargs
     tensor_dict.update(self.initializer_dict)
@@ -265,12 +263,14 @@ class BackendTFModule(tf.Module):
     if self.clast_input:
       agraph = AxisGraph(onnx_nodes, [n.name for n in self.graph_def.input])
       agraph.infer_perm(tensor_dict)
-      breakpoint()
-
+      # breakpoint()
+      node_left = [n for n in agraph.nodes if n.op_type != 'Constant']
+    else:
+      node_left = [n for n in onnx_nodes if n.op_type != 'Constant']
     """
     handle remaining nodes
     """
-    for onnx_node in [n for n in onnx_nodes if n.op_type != 'Constant']:
+    for onnx_node in node_left:
       output_ops = self.backend._onnx_node_to_tensorflow_op(onnx_node,
                                                             tensor_dict,
                                                             self.handlers,
