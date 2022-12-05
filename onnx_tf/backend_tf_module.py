@@ -10,14 +10,16 @@ FakeNode = namedtuple("FakeNode", ["op_type", "name"])
 
 class AxisMapping:
   
-  def __init__(self, tensor_dict: Dict[str, tf.Tensor]) -> None:
+  def __init__(self, tensor_dict: Dict[str, tf.Tensor], input_tensors: List[str]) -> None:
+    self.input_tensors = input_tensors
     self.tensor_dict = tensor_dict
     self.tensor_mapping = {
       'AveragePool': lambda a, b: b,
       'Pad': lambda a, b: b,
-      'Concat': self.cat_tensor,
+      'Concat': lambda a, b: b,
       'Transpose': self.transp_tensor,
       'Slice': lambda a, b: b,
+      'Add': lambda a, b: b,
     }
     self.attr_mapping = {
       'AveragePool': self.avg_pool_attr,
@@ -25,6 +27,7 @@ class AxisMapping:
       'Concat': self.cat_attr,
       'Transpose': self.transp_attr,
       'Slice': self.slice_attr,
+      'Add': self.add_attr,
     }
     self.visit = set()
   
@@ -53,13 +56,18 @@ class AxisMapping:
   def cat_attr(self, node: OnnxNode, src_perm: List[int]):
     # print('1233333333333333333333333333333333333333333333', node.name, node.attrs['axis'])
     node.attrs['axis'] = src_perm.index(node.attrs['axis'])
+    
+    for in_ten in node.inputs:
+      # BUG: does tnesor dict include OP's output tensors?
+      if in_ten in self.tensor_dict and in_ten not in self.input_tensors: # input is a constant, which not directly edit by axis graph
+        self.tensor_dict[in_ten] = tf.transpose(self.tensor_dict[in_ten], perm=src_perm)
   
   def cat_tensor(self, node: OnnxNode, src_perm: List[int]):
     # TODO
     return src_perm
   
   def transp_attr(self, node: OnnxNode, src_perm: List[int]):
-    node.attrs['perm'] = [src_perm[ax] for ax in node.attrs['perm']]
+    node.attrs['perm'] = [src_perm.index(ax) for ax in node.attrs['perm']]
   
   def transp_tensor(self, node: OnnxNode, src_perm: List[int]):
     # NOTE: assume transp_attr is already apply on node
@@ -75,20 +83,17 @@ class AxisMapping:
       table = tf.constant(py_map)
       mapped = tf.gather(table, axes)
       self.tensor_dict[node.inputs[3]] = mapped
-      
-      # vals_tensor = tf.constant(list(range(len(src_perm))))
-      # keys_tensor = tf.constant(src_perm)
-      # table = tf.lookup.StaticHashTable(
-      #     tf.lookup.KeyValueTensorInitializer(keys_tensor, vals_tensor),
-      #     default_value=-1)
-      # mapped = table.lookup(tf.cast(axes, tf.int32))
-      # self.tensor_dict[node.inputs[3]] = mapped
     else:
       starts = self.tensor_dict[node.inputs[1]]
       shape = starts.shape.as_list()
       axes_key = f"{node.name}_axes"
       self.tensor_dict[axes_key] = tf.constant(src_perm[:len(shape)])
       node.inputs.append(axes_key)
+  
+  def add_attr(self, node: OnnxNode, src_perm: List[int]):    
+    for in_ten in node.inputs:
+      if in_ten in self.tensor_dict and in_ten not in self.input_tensors: # input is a constant, which not directly edit by axis graph
+        self.tensor_dict[in_ten] = tf.transpose(self.tensor_dict[in_ten], perm=src_perm)
 
 
 class AxisGraph:
@@ -131,7 +136,7 @@ class AxisGraph:
         _dfs(in_ten)
     topo_order = topo_order[::-1]
 
-    ax_map = AxisMapping(tensor_dict)
+    ax_map = AxisMapping(tensor_dict, self.input_tensors)
     for parent in topo_order:
       src_perm = self.tensor_axis[parent]
       for child in self.graph[parent]:
@@ -197,7 +202,7 @@ class BackendTFModule(tf.Module):
     self.handler_variables = TFModuleHelper._create_handlers_variables_for_graph(
         handlers, graph_def, self.initializer_dict)
     self.is_export = False
-    self.clast_input = True
+    self.clast_input = False
 
   # get initializer from the main graph and all subgraphs in loop or if or scan
   # into tensor_dict
@@ -232,7 +237,7 @@ class BackendTFModule(tf.Module):
 
     return tensor_dict
 
-  @tf.function(autograph=True)
+  @tf.function(autograph=False)
   def __call__(self, **kwargs):
     tensor_dict = kwargs
     tensor_dict.update(self.initializer_dict)
@@ -258,6 +263,7 @@ class BackendTFModule(tf.Module):
                                                             opset=self.opset,
                                                             strict=self.strict)
       curr_node_output_map = dict(zip(onnx_node.outputs, output_ops))
+      print(curr_node_output_map)
       tensor_dict.update(curr_node_output_map)
 
     if self.clast_input:
